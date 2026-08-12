@@ -12,6 +12,7 @@
    - 温湿度超阈值、状态异常时红色加粗显示
    - 电量低于阈值时红色加粗提醒充电
 3. 设备编号 → 楼层区域精确映射，避免数据错位
+4. 使用北京时间（UTC+8），云端时区不影响显示
 
 用法：
     python daily_push.py            # 手动执行一次推送
@@ -23,7 +24,7 @@ import json
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -72,6 +73,14 @@ def check_credentials():
             + "。请在GitHub仓库Settings→Secrets配置环境变量，"
             + "或在脚本同目录创建 config.json 提供凭证。"
         )
+
+# 北京时间固定时区（UTC+8，中国无夏令时）
+BEIJING_TZ = timezone(timedelta(hours=8))
+
+
+def now_beijing():
+    """获取当前北京时间字符串 YYYY-MM-DD HH:MM"""
+    return datetime.now(BEIJING_TZ).strftime("%Y-%m-%d %H:%M")
 
 # 仓库名称
 WAREHOUSE_NAME = "深圳物流仓"
@@ -248,7 +257,7 @@ def build_card_content(devices):
       - **加粗**
       - <font color='red'>红色</font> 或 <font color='red'><b>红色加粗</b></font>
     """
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now_str = now_beijing()
     lines = []
     lines.append(f"**仓库：{WAREHOUSE_NAME}**")
     lines.append(f"采集时间：{now_str}")
