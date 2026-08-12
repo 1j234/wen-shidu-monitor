@@ -7,10 +7,10 @@
 
 功能：
 1. 通过法拉开放API获取设备温湿度数据（API为主）
-2. 生成飞书富文本（post）消息：按楼层区域展示
+2. 生成飞书消息卡片（interactive）：按楼层区域展示
    - 区域名称、温湿度、电量、状态、联网 均加粗
-   - 状态异常时红色加粗显示
-   - 温湿度超出阈值时数值红色加粗，电量低时提醒充电
+   - 温湿度超阈值、状态异常时红色加粗显示
+   - 电量低于阈值时红色加粗提醒充电
 3. 设备编号 → 楼层区域精确映射，避免数据错位
 
 用法：
@@ -241,40 +241,21 @@ def judge_status(device):
     return ok, detail
 
 
-def build_post_content(devices):
-    """生成飞书 post 富文本消息内容（支持加粗、红色字体）
+def build_card_content(devices):
+    """生成飞书消息卡片（interactive）内容，支持红色字体（<font color='red'>）
 
-    格式：
-    仓库：深圳物流仓
-    采集时间：2026-08-12 10:29
-    ——————————————————
-    深圳物流仓1F-货品周转区（加粗）
-     🌡️ 温度：28.3℃（加粗，超阈值时红色）
-    💧 湿度：60.6％（加粗，超阈值时红色）
-    🔋 电量：41%（加粗）
-    ✅ 状态：正常（加粗）/ ⚠️ 状态：异常（红色加粗）
-    📶 联网：在线（加粗）
-    ...
-    ——————————————
-    数据更新时间：2026-08-12 10:29
+    使用 lark_md 标签，支持：
+      - **加粗**
+      - <font color='red'>红色</font> 或 <font color='red'><b>红色加粗</b></font>
     """
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-    content = []
+    lines = []
+    lines.append(f"**仓库：{WAREHOUSE_NAME}**")
+    lines.append(f"采集时间：{now_str}")
+    lines.append("——————————————————")
 
-    def row(text, bold=False, red=False):
-        style = []
-        if bold:
-            style.append("bold")
-        if red:
-            style.append("red")
-        content.append([{"tag": "text", "text": text, "style": style}])
+    has_alarm = False
 
-    # 标题区
-    row(f"仓库：{WAREHOUSE_NAME}", bold=True)
-    row(f"采集时间：{now_str}")
-    row("——————————————————")
-
-    # 各楼层区域
     for d in devices:
         temp = d["temp"] if d["temp"] is not None else "--"
         hum = d["hum"] if d["hum"] is not None else "--"
@@ -282,36 +263,49 @@ def build_post_content(devices):
         net = "在线" if d["net_status"] == "online" else "离线"
 
         ok, detail = judge_status(d)
+        if not ok:
+            has_alarm = True
 
         # 区域名称加粗
-        row(d["region_name"], bold=True)
+        lines.append(f"**{d['region_name']}**")
         # 温度：异常时红色加粗
-        row(f" 🌡️ 温度：{temp}℃", bold=True, red=detail["temp_abnormal"])
+        if detail["temp_abnormal"]:
+            lines.append(f" 🌡️ 温度：<font color='red'>**{temp}℃**</font>")
+        else:
+            lines.append(f" 🌡️ 温度：**{temp}℃**")
         # 湿度：异常时红色加粗
-        row(f"💧 湿度：{hum}％", bold=True, red=detail["hum_abnormal"])
-        # 电量：低于阈值时显示红色加粗充电提醒
+        if detail["hum_abnormal"]:
+            lines.append(f"💧 湿度：<font color='red'>**{hum}％**</font>")
+        else:
+            lines.append(f"💧 湿度：**{hum}％**")
+        # 电量
         if detail["power_low"]:
-            row(f"🔋 电量：{power}%", bold=True)
-            row("⚠️ 请及时充电！", bold=True, red=True)
+            lines.append(f"🔋 电量：**{power}%**")
+            lines.append("⚠️ <font color='red'>**请及时充电！**</font>")
         else:
-            row(f"🔋 电量：{power}%", bold=True)
+            lines.append(f"🔋 电量：**{power}%**")
+        # 状态
         if ok:
-            row("✅ 状态：正常", bold=True)
+            lines.append("✅ 状态：**正常**")
         else:
-            row("⚠️ 状态：异常", bold=True, red=True)
+            lines.append("⚠️ 状态：<font color='red'>**异常**</font>")
             for issue in detail["issues"]:
-                row(f"　└ {issue}", red=True)
-        row(f"📶 联网：{net}", bold=True)
-        row("")  # 空行分隔
+                lines.append(f"　└ <font color='red'>{issue}</font>")
+        lines.append(f"📶 联网：**{net}**")
+        lines.append("")  # 空行分隔
 
-    row("——————————————")
-    row(f"数据更新时间：{now_str}")
+    lines.append("——————————————")
+    lines.append(f"数据更新时间：{now_str}")
 
     return {
-        "zh_cn": {
-            "title": "温湿度监测日报",
-            "content": content,
-        }
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "温湿度监测日报"},
+            "template": "red" if has_alarm else "blue",
+        },
+        "elements": [
+            {"tag": "markdown", "content": "\n".join(lines)}
+        ],
     }
 
 
@@ -331,20 +325,20 @@ def feishu_get_token():
     return data["tenant_access_token"]
 
 
-def feishu_send_post(chat_id, post_content):
-    """发送富文本（post）消息到群聊"""
+def feishu_send_card(chat_id, card_content):
+    """发送消息卡片（interactive）到群聊，支持红色字体"""
     token = feishu_get_token()
     resp = requests.post(
         "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
         headers={"Authorization": f"Bearer {token}"},
-        json={"receive_id": chat_id, "msg_type": "post",
-              "content": json.dumps(post_content, ensure_ascii=False)},
+        json={"receive_id": chat_id, "msg_type": "interactive",
+              "content": json.dumps(card_content, ensure_ascii=False)},
         timeout=15,
     )
     resp.raise_for_status()
     data = resp.json()
     if data.get("code") != 0:
-        raise RuntimeError(f"发送飞书消息失败: {data.get('msg')}")
+        raise RuntimeError(f"发送飞书卡片失败: {data.get('msg')}")
     return data
 
 
@@ -364,19 +358,19 @@ def main():
             print("⚠️ 未获取到任何设备数据")
             return 1
 
-        post_content = build_post_content(devices)
+        post_content = build_card_content(devices)
 
         print("=== 设备数据 ===")
         print(json.dumps(devices, ensure_ascii=False, indent=2))
-        print("\n=== 推送消息(post) ===")
+        print("\n=== 推送消息(interactive卡片) ===")
         print(json.dumps(post_content, ensure_ascii=False, indent=2))
 
         if dry_run:
             print("\n(dry-run 模式，未发送消息)")
             return 0
 
-        # 2. 发送到飞书（富文本）
-        feishu_send_post(FEISHU_CHAT_ID, post_content)
+        # 2. 发送到飞书（消息卡片，支持红色字体）
+        feishu_send_card(FEISHU_CHAT_ID, post_content)
         print("\n✅ 消息已推送到飞书群「深圳仓（物流服务部）」")
 
     except Exception as e:
