@@ -19,11 +19,6 @@ from datetime import datetime
 import requests
 
 # ==================== 配置区 ====================
-# 凭证读取顺序：
-#   1. 环境变量（云端GitHub Actions通过 Secrets 注入）
-#   2. 本地 config.json（被.gitignore排除，不会提交到仓库）
-import json
-
 def _load_config():
     cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
     if os.path.exists(cfg_path):
@@ -64,7 +59,6 @@ def check_credentials():
 
 WAREHOUSE_NAME = "深圳物流仓"
 
-# 设备编号 → 楼层区域名称（确保数据准确对应）
 DEVICE_MAP = {
     "111112601290117": "深圳物流仓1F-货品周转区",
     "111112601290118": "深圳物流仓2F-跨境存储区",
@@ -72,7 +66,6 @@ DEVICE_MAP = {
     "111112601290119": "深圳物流仓13F-香港存储区",
 }
 
-# 异常告警阈值（温湿度超出范围状态判为异常）
 TEMP_MIN = 15.0
 TEMP_MAX = 35.0
 HUM_MIN = 30.0
@@ -207,4 +200,86 @@ def build_post_content(devices):
 
         ok, issues = judge_status(d)
 
-        row(d["region_name"], bold=True
+        row(d["region_name"], bold=True)
+        row(f" 🌡️ 温度：{temp}℃", bold=True)
+        row(f"💧 湿度：{hum}％", bold=True)
+        row(f"🔋 电量：{power}", bold=True)
+        if ok:
+            row("✅ 状态：正常", bold=True)
+        else:
+            row("⚠️ 状态：异常", bold=True, red=True)
+            for issue in issues:
+                row(f"　└ {issue}", red=True)
+        row(f"📶 联网：{net}", bold=True)
+        row("")
+
+    row("——————————————")
+    row(f"数据更新时间：{now_str}")
+
+    return {"zh_cn": {"title": "温湿度监测日报", "content": content}}
+
+
+def feishu_get_token():
+    resp = requests.post(
+        "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+        json={"app_id": FEISHU_APP_ID, "app_secret": FEISHU_APP_SECRET},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if data.get("code") != 0:
+        raise RuntimeError(f"获取飞书token失败: {data.get('msg')}")
+    return data["tenant_access_token"]
+
+
+def feishu_send_post(chat_id, post_content):
+    token = feishu_get_token()
+    resp = requests.post(
+        "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"receive_id": chat_id, "msg_type": "post",
+              "content": json.dumps(post_content, ensure_ascii=False)},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if data.get("code") != 0:
+        raise RuntimeError(f"发送飞书消息失败: {data.get('msg')}")
+    return data
+
+
+def main():
+    dry_run = "--dry-run" in sys.argv
+    try:
+        check_credentials()
+        device_list = fala_get_device_list()
+        dev_nos = [d["id"] for d in device_list]
+        info_list = fala_get_device_info(dev_nos)
+        devices = parse_device_data(device_list, info_list)
+
+        if not devices:
+            print("⚠️ 未获取到任何设备数据")
+            return 1
+
+        post_content = build_post_content(devices)
+
+        print("=== 设备数据 ===")
+        print(json.dumps(devices, ensure_ascii=False, indent=2))
+        print("\n=== 推送消息(post) ===")
+        print(json.dumps(post_content, ensure_ascii=False, indent=2))
+
+        if dry_run:
+            print("\n(dry-run 模式，未发送消息)")
+            return 0
+
+        feishu_send_post(FEISHU_CHAT_ID, post_content)
+        print("\n✅ 消息已推送到飞书群「深圳仓（物流服务部）」")
+
+    except Exception as e:
+        print(f"❌ 推送失败: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
